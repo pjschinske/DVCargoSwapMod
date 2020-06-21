@@ -2,6 +2,8 @@
     "Id": "CargoSwapMod",
     "DisplayName": "Cargo Swap",
     "Author": "Cappycot",
-    "Version": "0.9.0",
-    "EntryMethod": "DVCargoSwapMod.Main.Load"
+    "Version": "0.9.1",
+    "EntryMethod": "DVCargoSwapMod.Main.Load",
+    "HomePage": "https://www.nexusmods.com/derailvalley/mods/156",
+    "Repository": "https://raw.githubusercontent.com/Cappycot/DVCargoSwapMod/master/Repository.json"
 }
