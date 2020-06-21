@@ -1,0 +1,7 @@
+{
+    "Id": "CargoSwapMod",
+    "DisplayName": "Cargo Swap",
+    "Author": "Cappycot",
+    "Version": "0.9.0",
+    "EntryMethod": "DVCargoSwapMod.Main.Load"
+}
