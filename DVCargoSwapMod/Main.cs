@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.IO;
 using System.Reflection;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityModManagerNet;
 
@@ -39,7 +40,7 @@ namespace DVCargoSwapMod
         // <container brand string, <new brand, is AC>>
         public static Dictionary<string, Dictionary<string, bool>> skinEntries = new Dictionary<string, Dictionary<string, bool>>();
         // <new brand, <texture name, texture>>
-        public static Dictionary<string, Dictionary<string, Texture2D>> skinTextures = new Dictionary<string, Dictionary<string, Texture2D>>();
+        public static Dictionary<string, Dictionary<string, Task<Texture2D>>> skinTextures = new Dictionary<string, Dictionary<string, Task<Texture2D>>>();
 
         static bool Load(UnityModManager.ModEntry modEntry)
         {
@@ -122,20 +123,13 @@ namespace DVCargoSwapMod
 
                             // Add texture file for brand entry.
                             if (!skinTextures.ContainsKey(brandName))
-                                skinTextures[brandName] = new Dictionary<string, Texture2D>();
+                                skinTextures[brandName] = new Dictionary<string, Task<Texture2D>>();
                             // Check if file already read for skin texture.
                             if (!skinTextures[brandName].ContainsKey(fileName))
                             {
                                 // Read file
-                                Texture2D skinTexture = new Texture2D(1, 1);
-                                if (ImageConversion.LoadImage(skinTexture, File.ReadAllBytes(skinFilePath)))
-                                {
-                                    skinTextures[brandName][fileName] = skinTexture;
-                                    if (skinTexture.height != skinTexture.width)
-                                        mod.Logger.Warning(string.Format("The texture located at '{0}' is not a square and may render incorrectly.", skinFilePath));
-                                    else if (skinTexture.height != 8192)
-                                        mod.Logger.Warning(string.Format("The texture located at '{0}' is not 8192x8192 and may render incorrectly.", skinFilePath));
-                                }
+                                var skinTexture = TextureLoader.Add(new FileInfo(skinFilePath), false);
+                                skinTextures[brandName][fileName] = skinTexture;
                             }
                         }
                     }
@@ -187,6 +181,8 @@ namespace DVCargoSwapMod
             return true;
         }
 
+        private static readonly HashSet<Texture2D> appliedTextures = new HashSet<Texture2D>();
+
         /// <summary>
         /// Apply the skin texture.
         /// </summary>
@@ -210,7 +206,20 @@ namespace DVCargoSwapMod
                             continue;
                         Texture texture = m.material.GetTexture(t);
                         if (texture is Texture2D && Main.skinTextures[__state].ContainsKey(texture.name))
-                            m.material.SetTexture(t, Main.skinTextures[__state][texture.name]);
+                        {
+                            string name = texture.name;
+                            Texture2D skinTexture = Main.skinTextures[__state][name].Result; 
+                            if (!appliedTextures.Contains(skinTexture))
+                            {
+                                skinTexture.Apply(false, true);
+                                appliedTextures.Add(skinTexture);
+                            }
+                            m.material.SetTexture(t, skinTexture);
+                            if (skinTexture.height != skinTexture.width)
+                                Main.mod.Logger.Warning($"The texture '{__state}/{name}' is not a square and may render incorrectly.");
+                            else if (skinTexture.height != 8192)
+                                Main.mod.Logger.Warning($"The texture '{__state}/{name}' is not 8192x8192 and may render incorrectly.");
+                        }
                     }
                     // m.material.SetTexture("_MainTex", Main.testContainerSkin);
                 }
