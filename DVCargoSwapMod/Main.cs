@@ -1,12 +1,19 @@
-﻿using Harmony12;
+﻿using HarmonyLib;
 using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.IO;
 using System.Reflection;
 using System.Threading.Tasks;
+using System.Reflection.Emit;
 using UnityEngine;
 using UnityModManagerNet;
+using System.Net;
+using DV.Utils;
+using DV.ThingTypes;
+using DV.ThingTypes.TransitionHelpers;
+using System.Xml.Linq;
+using DV;
 
 namespace DVCargoSwapMod
 {
@@ -14,7 +21,7 @@ namespace DVCargoSwapMod
     {
         public static UnityModManager.ModEntry mod;
         // Container prefab names.
-        public const string CONTAINER_PREFAB = "C_FlatcarContainer";
+        public const string CONTAINER_PREFAB = "C_Flatcar_Container";
         public const string CONTAINER_AC = "AC";
         // C_FlatcarContainerAny
         public const string CONTAINER_ANY = CONTAINER_PREFAB + "Any";
@@ -24,6 +31,14 @@ namespace DVCargoSwapMod
         public const string CONTAINER_A1_PREFAB = CONTAINER_PREFAB + "SunOmni";
         // C_FlatcarContainerSunOmniAC
         public const string CONTAINER_A1_AC_PREFAB = CONTAINER_A1_PREFAB + CONTAINER_AC;
+
+        public const string CONTAINER_CARGO_TYPE = "Empty";
+        // EmptySunOmni
+        public const string CONTAINER_A1_CARGO_TYPE = CONTAINER_CARGO_TYPE + "SunOmni";
+        // EmptyOrange3a2
+        public const string CONTAINER_MEDIUM_CARGO_TYPE = CONTAINER_PREFAB + "Orange3a2";
+
+
         // Sure "Red" and "White" are also brands.
         public static readonly string[] CONTAINER_BRANDS =
         {
@@ -45,7 +60,7 @@ namespace DVCargoSwapMod
         static bool Load(UnityModManager.ModEntry modEntry)
         {
             mod = modEntry;
-            HarmonyInstance harmony = HarmonyInstance.Create(modEntry.Info.Id);
+            Harmony harmony = new Harmony(modEntry.Info.Id);
             // mod.Logger.Log("Made a HarmonyInstance.");
             harmony.PatchAll(Assembly.GetExecutingAssembly());
             // mod.Logger.Log("Patch successful.");
@@ -79,6 +94,13 @@ namespace DVCargoSwapMod
             {
                 
                 string skinPrefab = new DirectoryInfo(skinPrefabPath).Name;
+
+                //correct folder name for backwards combatibility with old skins
+                skinPrefab = skinPrefab.Replace("C_FlatcarContainer", "C_Flatcar_Container");
+                skinPrefab = skinPrefab.Replace("C_FlatcarISOTankYellow2_Asphyxiating", "C_Flatcar_ISOTankYellowAsphyxiating_x2");
+                skinPrefab = skinPrefab.Replace("C_FlatcarISOTankYellow2_Explosive", "C_Flatcar_ISOTankYellowExplosive_x2");
+                skinPrefab = skinPrefab.Replace("C_FlatcarISOTankYellow2_Oxydizing", "C_Flatcar_ISOTankYellowOxydizing_x2");
+
                 bool allContainers = skinPrefab.Equals(CONTAINER_ANY);
 
                 string[] skinBrandPaths = Directory.GetDirectories(skinPrefabPath);
@@ -119,7 +141,11 @@ namespace DVCargoSwapMod
                         {
                             string fileName = Path.GetFileNameWithoutExtension(new FileInfo(skinFilePath).Name);
                             // TODO: Delete line if Altfuture fixes typo in file name.
-                            fileName = fileName.Replace("ContainersAtlas_01", "ContainersAltas_01");
+                            // Update: yes they fixed it (4 years later lol), now we need to correct the other way for backwards compatibility
+                            // note the difference between "Altas" and "Atlas"
+                            fileName = fileName.Replace("ContainersAltas_01", "ContainersAtlas_01");
+                            // there is one other to correct too (again, for backwards compatibility with old skin packs)
+                            fileName = fileName.Replace("iso_tank_yellow_d", "ISOTankYellow_01d");
 
                             // Add texture file for brand entry.
                             if (!skinTextures.ContainsKey(brandName))
@@ -138,92 +164,134 @@ namespace DVCargoSwapMod
         }
     }
 
-    [HarmonyPatch(typeof(CargoModelController), "InstantiateCargoModel")]
+    [HarmonyPatch(typeof(CargoModelController), "OnCargoLoaded")]
     class CargoModelController_InstantiateCargoModel_Patch
     {
 
-        /// <summary>
-        /// Load the MD5 sum of the selected skin into __state. Use null if no change.
-        /// </summary>
-        /// <param name="cargoPrefabName"></param>
-        /// <param name="cargoModel"></param>
-        /// <param name="__state"></param>
-        /// <returns></returns>
-        static bool Prefix(ref string cargoPrefabName, out GameObject cargoModel, out string __state)
+        static bool Prefix(CargoModelController __instance)
         {
-            cargoModel = null;
-            string normalizedCargoPrefab = cargoPrefabName;
-            __state = null;
-
-            // Normalize container prefab name.
-            bool acswap = Main.containerACPrefabs.ContainsKey(cargoPrefabName);
-            if (acswap)
-                normalizedCargoPrefab = Main.containerACPrefabs[cargoPrefabName];
-
-            // Check if there are any skin entries for prefab.
-            if (!Main.skinEntries.ContainsKey(normalizedCargoPrefab))
-                return true;
-
-            Dictionary<string, bool> skinEntries = Main.skinEntries[normalizedCargoPrefab];
-            List<string> skinNames = new List<string>(skinEntries.Keys);
-            string skin;
-
-            if (skinNames.Count > 0 && !(skin = skinNames[UnityEngine.Random.Range(0, skinNames.Count)]).Equals(Main.DEFAULT_BRAND, StringComparison.OrdinalIgnoreCase))
+        //original onCargoLoaded code
+            if (SingletonBehaviour<AudioManager>.Instance.cargoLoadUnload != null && __instance.trainCar.IsCargoLoadedUnloadedByMachine)
             {
-                // We only need to swap out the prefab for normal containers.
-                acswap = acswap || skinEntries[skin];
-                if (acswap || Main.containerPrefabs.Contains(cargoPrefabName))
-                    cargoPrefabName = acswap ? Main.CONTAINER_A1_AC_PREFAB : Main.CONTAINER_A1_PREFAB;
-                // Set state to key in chosen skin.
-                __state = skin;
+                SingletonBehaviour<AudioManager>.Instance.cargoLoadUnload.Play(__instance.trainCar.transform.position, 1f, 1f, 0f, 10f, 500f, default(AudioSourceCurves), null, __instance.trainCar.transform);
             }
-
-            return true;
-        }
-
-        private static readonly HashSet<Texture2D> appliedTextures = new HashSet<Texture2D>();
-
-        /// <summary>
-        /// Apply the skin texture.
-        /// </summary>
-        /// <param name="__instance"></param>
-        /// <param name="__state"></param>
-        static void Postfix(CargoModelController __instance, string __state) // , TrainCar ___trainCar)
-        {
-            if (__state != null)
+            if (__instance.currentCargoModel != null)
             {
-                // Main.mod.Logger.Log(string.Format("Some cargo was loaded into a prefab named {0} on car {1}", __state, ___trainCar.logicCar.ID));
-                GameObject cargoModel = __instance.GetCurrentCargoModel();
-                MeshRenderer[] meshes = cargoModel.GetComponentsInChildren<MeshRenderer>();
-                foreach (MeshRenderer m in meshes)
+                Debug.LogWarning("This shouldn't happen, cargo already instantiated, but new cargo is loaded, deleting currentCargoModel: " + __instance.currentCargoModel.name, __instance);
+                __instance.DestroyCurrentCargoModel();
+            }
+            CargoType_v2 cargoType_v2 = __instance.trainCar.LoadedCargo.ToV2();
+            TrainCarType_v2 parentType = __instance.trainCar.carLivery.parentType;
+            GameObject[] cargoPrefabsForCarType = cargoType_v2.GetCargoPrefabsForCarType(parentType);
+
+            string skin = null;
+            if (cargoPrefabsForCarType != null && cargoPrefabsForCarType.Length != 0)
+            {
+                GameObject original = cargoPrefabsForCarType[UnityEngine.Random.Range(0, cargoPrefabsForCarType.Length)];
+
+        //original prefix
+
+                // Get prefab name.
+                string cargoPrefabName = original.name;
+                string normalizedCargoPrefab = (string)cargoPrefabName.Clone();
+
+                // Normalize container prefab name.
+                bool acswap = Main.containerACPrefabs.ContainsKey(cargoPrefabName);
+                if (acswap)
+                    normalizedCargoPrefab = Main.containerACPrefabs[cargoPrefabName];
+
+                Main.mod.Logger.Log($"Cargo prefab name: '{cargoPrefabName}'");
+                Main.mod.Logger.Log($"Normalized cargo prefab name: '{normalizedCargoPrefab}'");
+
+                // Check if there are any skin entries for prefab.
+                if (!Main.skinEntries.ContainsKey(normalizedCargoPrefab))
+                    return true;
+
+                Dictionary<string, bool> skinEntries = Main.skinEntries[normalizedCargoPrefab];
+                List<string> skinNames = new List<string>(skinEntries.Keys);
+
+                if (skinNames.Count > 0 && !(skin = skinNames[UnityEngine.Random.Range(0, skinNames.Count)]).Equals(Main.DEFAULT_BRAND, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (m.material == null)
-                        continue;
-
-                    foreach (string t in Main.TEXTURE_TYPES)
+                    // We only need to swap out the prefab for normal containers.
+                    acswap = acswap || skinEntries[skin];
+                    if (acswap || Main.containerPrefabs.Contains(cargoPrefabName))
                     {
-                        if (!m.material.HasProperty(t))
-                            continue;
-                        Texture texture = m.material.GetTexture(t);
-                        if (texture is Texture2D && Main.skinTextures[__state].ContainsKey(texture.name))
+                        CargoType_v2 containerCargoTypeV2;
+                        bool foundContainerA1Prefab = Globals.G.Types.TryGetCargo(Main.CONTAINER_A1_CARGO_TYPE, out containerCargoTypeV2);
+                        if (!foundContainerA1Prefab)
                         {
-                            string name = texture.name;
-                            Texture2D skinTexture = Main.skinTextures[__state][name].Result; 
-                            if (!appliedTextures.Contains(skinTexture))
-                            {
-                                skinTexture.Apply(false, true);
-                                appliedTextures.Add(skinTexture);
-                            }
-                            m.material.SetTexture(t, skinTexture);
-                            if (skinTexture.height != skinTexture.width)
-                                Main.mod.Logger.Warning($"The texture '{__state}/{name}' is not a square and may render incorrectly.");
-                            else if (skinTexture.height != 8192)
-                                Main.mod.Logger.Warning($"The texture '{__state}/{name}' is not 8192x8192 and may render incorrectly.");
+                            Main.mod.Logger.Error("Could not find the sunomni container prefab");
+                            return true;
                         }
+                        GameObject[] containerA1Prefabs = containerCargoTypeV2.GetCargoPrefabsForCarType(parentType);
+                        foreach (GameObject containerA1Prefab in containerA1Prefabs)
+                        {
+                            Main.mod.Logger.Log($"Container A1 Prefab: '{containerA1Prefab.name}'");
+                        }
+                        original = (acswap && containerA1Prefabs.Length > 1) ? containerA1Prefabs[1] : containerA1Prefabs[0];
                     }
-                    // m.material.SetTexture("_MainTex", Main.testContainerSkin);
                 }
+                __instance.currentCargoModel = UnityEngine.Object.Instantiate(original, __instance.trainCar.interior.transform, worldPositionStays: false);
+                __instance.currentCargoModel.transform.localPosition = Vector3.zero;
+                __instance.currentCargoModel.transform.localRotation = Quaternion.identity;
+                __instance.trainColliders.SetupCargo(__instance.currentCargoModel);
+
+                Main.mod.Logger.Log($"Skin: '{skin}'");
             }
+
+            //original postfix
+
+            Main.mod.Logger.Log($"Skin: '{skin}'");
+
+            if (skin == null)
+            {
+                return false;
+            }
+
+            // Main.mod.Logger.Log(string.Format("Some cargo was loaded into a prefab named {0} on car {1}", __state, ___trainCar.logicCar.ID));
+            //GameObject cargoModel = __instance.GetCurrentCargoModel();
+            MeshRenderer[] meshes = __instance.currentCargoModel.GetComponentsInChildren<MeshRenderer>();
+            foreach (MeshRenderer m in meshes)
+            {
+                Main.mod.Logger.Log($"MeshRenderer name: '{m.name}'");
+                if (m.material == null)
+                    continue;
+
+                foreach (string t in Main.TEXTURE_TYPES)
+                {
+                    if (!m.material.HasProperty(t))
+                    {
+                        Main.mod.Logger.Log($"Didn't find '{t}' in '{__instance.currentCargoModel.name}'");
+                        continue;
+                    }
+                    Texture texture = m.material.GetTexture(t);
+                    if (texture is Texture2D && Main.skinTextures[skin].ContainsKey(texture.name))
+                    {
+                        string name = texture.name;
+                        Texture2D skinTexture = Main.skinTextures[skin][name].Result;
+                        if (!appliedTextures.Contains(skinTexture))
+                        {
+                            skinTexture.Apply(false, true);
+                            appliedTextures.Add(skinTexture);
+                        }
+                        m.material.SetTexture(t, skinTexture);
+
+                        Main.mod.Logger.Log($"Loaded texture for {skin}/{name} in {t}.");
+
+                        if (skinTexture.height != skinTexture.width)
+                            Main.mod.Logger.Warning($"The texture '{skin}/{name}' is not a square and may render incorrectly.");
+                        else if (skinTexture.height != 8192)
+                            Main.mod.Logger.Warning($"The texture '{skin}/{name}' is not 8192x8192 and may render incorrectly.");
+                    }
+                }
+                // m.material.SetTexture("_MainTex", Main.testContainerSkin);
+            }
+
+
+            return false;
         }
+
+        public static readonly HashSet<Texture2D> appliedTextures = new HashSet<Texture2D>();
+
     }
 }

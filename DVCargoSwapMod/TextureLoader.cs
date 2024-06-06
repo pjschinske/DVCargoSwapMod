@@ -33,16 +33,18 @@ namespace DVCargoSwapMod
             return DDSUtils.ReadDDSGz(cached, linear);
         }
 
-        private static Task<Texture2D> Load(FileInfo fileInfo, bool linear)
+        private static Task<Texture2D> Load(FileInfo fileInfo, bool isNormalMap)
         {
             var info = StbImage.GetImageInfo(fileInfo.FullName);
-            var texture = new Texture2D(info.width, info.height,
-                info.componentCount > 3 ? TextureFormat.DXT5 : TextureFormat.DXT1,
-                mipChain: true, linear);
+            var format = isNormalMap ? TextureFormat.BC5 :
+                info.componentCount > 3 ? TextureFormat.DXT5 :
+                TextureFormat.DXT1;
+            var texture = new Texture2D(info.width, info.height, format,
+                mipChain: true, linear: isNormalMap);
             var nativeArray = texture.GetRawTextureData<byte>();
             return Task.Run(() =>
             {
-                PopulateTexture(fileInfo, info.componentCount > 3, nativeArray);
+                PopulateTexture(fileInfo, format, nativeArray);
                 var cachePath = GetCachePath(fileInfo.FullName);
                 Directory.CreateDirectory(Path.GetDirectoryName(cachePath));
                 DDSUtils.WriteDDSGz(new FileInfo(cachePath), texture);
@@ -53,19 +55,38 @@ namespace DVCargoSwapMod
         private static string GetCachePath(string path)
         {
             var sep = Path.DirectorySeparatorChar;
-            var cacheDirName = Path.GetDirectoryName(path.Replace(sep + "Skins" + sep, sep + "Cache" + sep));
+            var cacheDirName = Path.GetDirectoryName(
+                path.Replace(sep + "Skins" + sep, sep + "Cache" + sep)
+                .Replace(sep + "SkinsAC" + sep, sep + "CacheAC" + sep)
+                );
             var cacheFileName = Path.GetFileNameWithoutExtension(path) + ".dds.gz";
             return Path.Combine(cacheDirName, cacheFileName);
         }
 
-        private static void PopulateTexture(FileInfo path, bool hasAlpha, NativeArray<byte> dest)
+        private static void PopulateTexture(FileInfo path, TextureFormat textureFormat, NativeArray<byte> dest)
         {
+            StbImage.TextureFormat format;
+            switch (textureFormat)
+            {
+                case TextureFormat.DXT1:
+                    format = StbImage.TextureFormat.BC1;
+                    break;
+                case TextureFormat.DXT5:
+                    format = StbImage.TextureFormat.BC3;
+                    break;
+                case TextureFormat.BC5:
+                    format = StbImage.TextureFormat.BC5;
+                    break;
+                default:
+                    throw new ArgumentException("textureFormat", $"Unsupported TextureFormat {textureFormat}");
+            }
+
             unsafe
             {
                 StbImage.ReadAndCompressImageWithMipmaps(
                     path.FullName,
                     flipVertically: true,
-                    useAlpha: hasAlpha,
+                    format: format,
                     (IntPtr)dest.GetUnsafePtr(),
                     dest.Length);
             }
@@ -74,51 +95,112 @@ namespace DVCargoSwapMod
 
     internal static class DDSUtils
     {
-        private static int Mipmap0SizeInBytes(int width, int height, bool hasAlpha)
+        private static int Mipmap0SizeInBytes(int width, int height, UnityEngine.TextureFormat textureFormat)
         {
             var blockWidth = (width + 3) / 4;
             var blockHeight = (height + 3) / 4;
-            return blockWidth * blockHeight * (hasAlpha ? 16 : 8);
+            int bytesPerBlock;
+            switch (textureFormat)
+            {
+                case TextureFormat.DXT1:
+                    bytesPerBlock = 8;
+                    break;
+                case TextureFormat.DXT5:
+                case TextureFormat.BC5:
+                    bytesPerBlock = 16;
+                    break;
+                default:
+                    throw new ArgumentException("textureFormat", $"Unsupported TextureFormat {textureFormat}");
+            }
+            return blockWidth * blockHeight * bytesPerBlock;
         }
 
-        private static byte[] DDSHeader(int width, int height, bool hasAlpha, int numMipmaps)
+        private const int DDS_HEADER_SIZE = 128;
+        private const int DDS_HEADER_DXT10_SIZE = 20;
+        private static byte[] DDSHeader(int width, int height, TextureFormat textureFormat, int numMipmaps)
         {
-            var header = new byte[128];
-            var stream = new MemoryStream(header);
-            stream.Write(Encoding.ASCII.GetBytes("DDS "), 0, 4);
-            stream.Write(BitConverter.GetBytes(124), 0, 4); // dwSize
-            // dwFlags = CAPS | HEIGHT | WIDTH | PIXELFORMAT | MIPMAPCOUNT | LINEARSIZE
-            stream.Write(BitConverter.GetBytes(0x1 | 0x2 | 0x4 | 0x1000 | 0x20000 | 0x80000), 0, 4);
-            stream.Write(BitConverter.GetBytes(height), 0, 4);
-            stream.Write(BitConverter.GetBytes(width), 0, 4);
-            stream.Write(BitConverter.GetBytes(Mipmap0SizeInBytes(width, height, hasAlpha)), 0, 4); // dwPitchOrLinearSize
-            stream.Write(BitConverter.GetBytes(0), 0, 4); // dwDepth
-            stream.Write(BitConverter.GetBytes(numMipmaps), 0, 4); // dwMipMapCount
-            for (int i = 0; i < 11; i++)
-                stream.Write(BitConverter.GetBytes(0), 0, 4); // dwReserved1
-            var pixelFormat = PixelFormat(hasAlpha);
-            stream.Write(pixelFormat, 0, pixelFormat.Length);
-            // dwCaps = COMPLEX | MIPMAP | TEXTURE
-            stream.Write(BitConverter.GetBytes(0x401008), 0, 4);
-            stream.Close();
+            var needsDXGIHeader = textureFormat != TextureFormat.DXT1 && textureFormat != TextureFormat.DXT5;
+            var headerSize = needsDXGIHeader ? DDS_HEADER_SIZE + DDS_HEADER_DXT10_SIZE : DDS_HEADER_SIZE;
+            var header = new byte[headerSize];
+            using (var stream = new MemoryStream(header))
+            {
+                stream.Write(Encoding.ASCII.GetBytes("DDS "), 0, 4);
+                stream.Write(BitConverter.GetBytes(124), 0, 4); // dwSize
+                                                                // dwFlags = CAPS | HEIGHT | WIDTH | PIXELFORMAT | MIPMAPCOUNT | LINEARSIZE
+                stream.Write(BitConverter.GetBytes(0x1 | 0x2 | 0x4 | 0x1000 | 0x20000 | 0x80000), 0, 4);
+                stream.Write(BitConverter.GetBytes(height), 0, 4);
+                stream.Write(BitConverter.GetBytes(width), 0, 4);
+                stream.Write(BitConverter.GetBytes(Mipmap0SizeInBytes(width, height, textureFormat)), 0, 4); // dwPitchOrLinearSize
+                stream.Write(BitConverter.GetBytes(0), 0, 4); // dwDepth
+                stream.Write(BitConverter.GetBytes(numMipmaps), 0, 4); // dwMipMapCount
+                for (int i = 0; i < 11; i++)
+                    stream.Write(BitConverter.GetBytes(0), 0, 4); // dwReserved1
+                var pixelFormat = PixelFormat(textureFormat);
+                stream.Write(pixelFormat, 0, pixelFormat.Length);
+                // dwCaps = COMPLEX | MIPMAP | TEXTURE
+                stream.Write(BitConverter.GetBytes(0x401008), 0, 4);
+
+                if (needsDXGIHeader)
+                    stream.Write(DDSHeaderDXT10(textureFormat), 0, DDS_HEADER_DXT10_SIZE);
+            }
             return header;
         }
 
-        private static byte[] PixelFormat(bool hasAlpha)
+        private static byte[] DDSHeaderDXT10(TextureFormat textureFormat)
         {
+            var headerDXT10 = new byte[DDS_HEADER_DXT10_SIZE];
+            using (var stream = new MemoryStream(headerDXT10))
+            {
+                stream.Write(BitConverter.GetBytes(DXGIFormat(textureFormat)), 0, 4); // dxgiFormat
+                stream.Write(BitConverter.GetBytes(3), 0, 4); // resourceDimension = 3 = DDS_DIMENSION_TEXTURE2D
+                stream.Write(BitConverter.GetBytes(0), 0, 4); // miscFlag
+                stream.Write(BitConverter.GetBytes(1), 0, 4); // arraySize = 1
+                stream.Write(BitConverter.GetBytes(0), 0, 4); // miscFlags2 = 0 = DDS_ALPHA_MODE_UNKNOWN
+            }
+            return headerDXT10;
+        }
+
+        private static int DXGIFormat(TextureFormat textureFormat)
+        {
+            switch (textureFormat)
+            {
+                case TextureFormat.BC5: return 83;
+                default:
+                    throw new ArgumentException("textureFormat", $"Unsupported TextureFormat {textureFormat}");
+            }
+        }
+
+        private static byte[] PixelFormat(TextureFormat textureFormat)
+        {
+            string fourCC;
+            switch (textureFormat)
+            {
+                case TextureFormat.DXT1:
+                    fourCC = "DXT1";
+                    break;
+                case TextureFormat.DXT5:
+                    fourCC = "DXT5";
+                    break;
+                default:
+                    fourCC = "DX10";
+                    break;
+            }
+
             var pixelFormat = new byte[32];
-            var stream = new MemoryStream(pixelFormat);
-            stream.Write(BitConverter.GetBytes(32), 0, 4); // dwSize
-            stream.Write(BitConverter.GetBytes(0x4), 0, 4); // dwFlags = FOURCC
-            stream.Write(Encoding.ASCII.GetBytes(hasAlpha ? "DXT5" : "DXT1"), 0, 4); // dwFourCC
-            stream.Close();
+            using (var stream = new MemoryStream(pixelFormat))
+            {
+                stream.Write(BitConverter.GetBytes(32), 0, 4); // dwSize
+                stream.Write(BitConverter.GetBytes(0x4), 0, 4); // dwFlags = FOURCC
+                stream.Write(Encoding.ASCII.GetBytes(fourCC), 0, 4); // dwFourCC
+            }
             return pixelFormat;
         }
 
         public static void WriteDDSGz(FileInfo fileInfo, Texture2D texture)
         {
             var outfile = new GZipStream(fileInfo.OpenWrite(), CompressionLevel.Optimal);
-            outfile.Write(DDSHeader(texture.width, texture.height, texture.format == TextureFormat.DXT5, texture.mipmapCount), 0, 128);
+            var header = DDSHeader(texture.width, texture.height, texture.format, texture.mipmapCount);
+            outfile.Write(header, 0, header.Length);
             var data = texture.GetRawTextureData<byte>().ToArray();
             Debug.Log($"Writing to {fileInfo.FullName}");
             outfile.Write(data, 0, data.Length);
@@ -145,6 +227,21 @@ namespace DVCargoSwapMod
             {
                 case "DXT1": pixelFormat = TextureFormat.DXT1; break;
                 case "DXT5": pixelFormat = TextureFormat.DXT5; break;
+                case "DX10":
+                    // read DDS_HEADER_DXT10 header extension
+                    bytesRead = infile.Read(buf, 0, DDS_HEADER_DXT10_SIZE);
+                    if (bytesRead != DDS_HEADER_DXT10_SIZE)
+                        throw new Exception("Could not read DXT10 header from DDS file");
+                    int dxgiFormat = BitConverter.ToInt32(buf, 0);
+                    switch (dxgiFormat)
+                    {
+                        case 83:
+                            pixelFormat = TextureFormat.BC5;
+                            break;
+                        default:
+                            throw new Exception($"Unsupported DXGI_FORMAT {dxgiFormat}");
+                    }
+                    break;
                 default    :  throw new Exception($"Unknown FourCC: {fourCC}");
             }
 
