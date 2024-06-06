@@ -96,10 +96,12 @@ namespace DVCargoSwapMod
                 string skinPrefab = new DirectoryInfo(skinPrefabPath).Name;
 
                 //correct folder name for backwards combatibility with old skins
-                skinPrefab = skinPrefab.Replace("C_FlatcarContainer", "C_Flatcar_Container");
-                skinPrefab = skinPrefab.Replace("C_FlatcarISOTankYellow2_Asphyxiating", "C_Flatcar_ISOTankYellowAsphyxiating_x2");
-                skinPrefab = skinPrefab.Replace("C_FlatcarISOTankYellow2_Explosive", "C_Flatcar_ISOTankYellowExplosive_x2");
-                skinPrefab = skinPrefab.Replace("C_FlatcarISOTankYellow2_Oxydizing", "C_Flatcar_ISOTankYellowOxydizing_x2");
+                skinPrefab = skinPrefab.Replace("C_FlatcarContainer", "C_Flatcar_Container")
+                    .Replace("C_FlatcarISOTankYellow2_Asphyxiating", "C_Flatcar_ISOTankYellowAsphyxiating_x2")
+                    .Replace("C_FlatcarISOTankYellow2_Asphyxiating", "C_Flatcar_ISOTankYellowAsphyxiating_x2")
+                    .Replace("C_FlatcarISOTankYellow2_Explosive", "C_Flatcar_ISOTankYellowExplosive_x2")
+                    .Replace("C_FlatcarISOTankYellow2_Oxydizing", "C_Flatcar_ISOTankYellowOxydizing_x2")
+                    .Replace("C_FlatcarFarmTractor", "C_Flatcar_FarmTractors");
 
                 bool allContainers = skinPrefab.Equals(CONTAINER_ANY);
 
@@ -185,63 +187,57 @@ namespace DVCargoSwapMod
             GameObject[] cargoPrefabsForCarType = cargoType_v2.GetCargoPrefabsForCarType(parentType);
 
             string skin = null;
-            if (cargoPrefabsForCarType != null && cargoPrefabsForCarType.Length != 0)
+            if (cargoPrefabsForCarType == null || cargoPrefabsForCarType.Length == 0)
             {
-                GameObject original = cargoPrefabsForCarType[UnityEngine.Random.Range(0, cargoPrefabsForCarType.Length)];
+                return true;
+            }
+            GameObject original = cargoPrefabsForCarType[UnityEngine.Random.Range(0, cargoPrefabsForCarType.Length)];
 
         //original prefix
 
-                // Get prefab name.
-                string cargoPrefabName = original.name;
-                string normalizedCargoPrefab = (string)cargoPrefabName.Clone();
+            // Get prefab name.
+            string cargoPrefabName = original.name;
+            string normalizedCargoPrefab = (string)cargoPrefabName.Clone();
 
-                // Normalize container prefab name.
-                bool acswap = Main.containerACPrefabs.ContainsKey(cargoPrefabName);
-                if (acswap)
-                    normalizedCargoPrefab = Main.containerACPrefabs[cargoPrefabName];
+            // Normalize container prefab name.
+            bool acswap = Main.containerACPrefabs.ContainsKey(cargoPrefabName);
+            if (acswap)
+                normalizedCargoPrefab = Main.containerACPrefabs[cargoPrefabName];
 
-                Main.mod.Logger.Log($"Cargo prefab name: '{cargoPrefabName}'");
-                Main.mod.Logger.Log($"Normalized cargo prefab name: '{normalizedCargoPrefab}'");
+            // Check if there are any skin entries for prefab.
+            if (!Main.skinEntries.ContainsKey(normalizedCargoPrefab))
+                return true;
 
-                // Check if there are any skin entries for prefab.
-                if (!Main.skinEntries.ContainsKey(normalizedCargoPrefab))
-                    return true;
+            Dictionary<string, bool> skinEntries = Main.skinEntries[normalizedCargoPrefab];
+            List<string> skinNames = new List<string>(skinEntries.Keys);
 
-                Dictionary<string, bool> skinEntries = Main.skinEntries[normalizedCargoPrefab];
-                List<string> skinNames = new List<string>(skinEntries.Keys);
-
-                if (skinNames.Count > 0 && !(skin = skinNames[UnityEngine.Random.Range(0, skinNames.Count)]).Equals(Main.DEFAULT_BRAND, StringComparison.OrdinalIgnoreCase))
+            if (skinNames.Count > 0 && !(skin = skinNames[UnityEngine.Random.Range(0, skinNames.Count)]).Equals(Main.DEFAULT_BRAND, StringComparison.OrdinalIgnoreCase))
+            {
+                // We only need to swap out the prefab for normal containers.
+                acswap = acswap || skinEntries[skin];
+                if (acswap || Main.containerPrefabs.Contains(cargoPrefabName))
                 {
-                    // We only need to swap out the prefab for normal containers.
-                    acswap = acswap || skinEntries[skin];
-                    if (acswap || Main.containerPrefabs.Contains(cargoPrefabName))
+                    CargoType_v2 containerCargoTypeV2;
+                    bool foundContainerA1Prefab = Globals.G.Types.TryGetCargo(Main.CONTAINER_A1_CARGO_TYPE, out containerCargoTypeV2);
+                    if (!foundContainerA1Prefab)
                     {
-                        CargoType_v2 containerCargoTypeV2;
-                        bool foundContainerA1Prefab = Globals.G.Types.TryGetCargo(Main.CONTAINER_A1_CARGO_TYPE, out containerCargoTypeV2);
-                        if (!foundContainerA1Prefab)
-                        {
-                            Main.mod.Logger.Error("Could not find the sunomni container prefab");
-                            return true;
-                        }
-                        GameObject[] containerA1Prefabs = containerCargoTypeV2.GetCargoPrefabsForCarType(parentType);
-                        foreach (GameObject containerA1Prefab in containerA1Prefabs)
-                        {
-                            Main.mod.Logger.Log($"Container A1 Prefab: '{containerA1Prefab.name}'");
-                        }
-                        original = (acswap && containerA1Prefabs.Length > 1) ? containerA1Prefabs[1] : containerA1Prefabs[0];
+                        Main.mod.Logger.Error("Could not find the sunomni container prefab");
+                        return true;
                     }
+                    GameObject[] containerA1Prefabs = containerCargoTypeV2.GetCargoPrefabsForCarType(parentType);
+                    /*foreach (GameObject containerA1Prefab in containerA1Prefabs)
+                    {
+                        Main.mod.Logger.Log($"Container A1 Prefab: '{containerA1Prefab.name}'");
+                    }*/
+                    original = (acswap && containerA1Prefabs.Length > 1) ? containerA1Prefabs[1] : containerA1Prefabs[0];
                 }
-                __instance.currentCargoModel = UnityEngine.Object.Instantiate(original, __instance.trainCar.interior.transform, worldPositionStays: false);
-                __instance.currentCargoModel.transform.localPosition = Vector3.zero;
-                __instance.currentCargoModel.transform.localRotation = Quaternion.identity;
-                __instance.trainColliders.SetupCargo(__instance.currentCargoModel);
-
-                Main.mod.Logger.Log($"Skin: '{skin}'");
             }
+            __instance.currentCargoModel = UnityEngine.Object.Instantiate(original, __instance.trainCar.interior.transform, worldPositionStays: false);
+            __instance.currentCargoModel.transform.localPosition = Vector3.zero;
+            __instance.currentCargoModel.transform.localRotation = Quaternion.identity;
+            __instance.trainColliders.SetupCargo(__instance.currentCargoModel);
 
-            //original postfix
-
-            Main.mod.Logger.Log($"Skin: '{skin}'");
+        //original postfix
 
             if (skin == null)
             {
@@ -253,7 +249,7 @@ namespace DVCargoSwapMod
             MeshRenderer[] meshes = __instance.currentCargoModel.GetComponentsInChildren<MeshRenderer>();
             foreach (MeshRenderer m in meshes)
             {
-                Main.mod.Logger.Log($"MeshRenderer name: '{m.name}'");
+                //Main.mod.Logger.Log($"MeshRenderer name: '{m.name}'");
                 if (m.material == null)
                     continue;
 
@@ -276,17 +272,20 @@ namespace DVCargoSwapMod
                         }
                         m.material.SetTexture(t, skinTexture);
 
-                        Main.mod.Logger.Log($"Loaded texture for {skin}/{name} in {t}.");
+                        //Main.mod.Logger.Log($"Loaded texture for {skin}/{name} in {t}.");
 
                         if (skinTexture.height != skinTexture.width)
                             Main.mod.Logger.Warning($"The texture '{skin}/{name}' is not a square and may render incorrectly.");
-                        else if (skinTexture.height != 8192)
-                            Main.mod.Logger.Warning($"The texture '{skin}/{name}' is not 8192x8192 and may render incorrectly.");
+                        //dunno why this is here: other texture sizes render just fine. IIRC it just needs to be square
+                        /*else if (skinTexture.height != 8192)
+                            Main.mod.Logger.Warning($"The texture '{skin}/{name}' is not 8192x8192, but {skinTexture.width}x{skinTexture.height} and may render incorrectly.");*/
                     }
                 }
                 // m.material.SetTexture("_MainTex", Main.testContainerSkin);
             }
 
+            //  normalizedCargoPrefab
+            Main.mod.Logger.Log($"Replaced texture on {__instance.trainCar.ID} with {skin}");
 
             return false;
         }
