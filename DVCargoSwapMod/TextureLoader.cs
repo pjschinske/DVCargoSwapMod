@@ -1,4 +1,6 @@
+using Microsoft.SqlServer.Server;
 using System;
+using System.Diagnostics.Eventing.Reader;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
@@ -6,17 +8,18 @@ using System.Threading.Tasks;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using UnityEngine;
+using static DVCargoSwapMod.StbImage;
 
 namespace DVCargoSwapMod
 {
     public static class TextureLoader
     {
-        public static Task<Texture2D> Add(FileInfo fileInfo, bool linear)
+        public static Task<Texture2D> Add(FileInfo fileInfo, bool linear, bool resize)
         {
             var result = TryLoadFromCache(fileInfo, linear);
             if (!result.IsCompleted || result.Result != null)
                 return result;
-            return Load(fileInfo, linear);
+            return Load(fileInfo, linear, resize);
         }
 
         private static Task<Texture2D> TryLoadFromCache(FileInfo fileInfo, bool linear)
@@ -33,23 +36,142 @@ namespace DVCargoSwapMod
             return DDSUtils.ReadDDSGz(cached, linear);
         }
 
-        private static Task<Texture2D> Load(FileInfo fileInfo, bool isNormalMap)
+        private static Task<Texture2D> Load(FileInfo fileInfo, bool isNormalMap, bool resize)
         {
+            Main.mod.Logger.Log($"fileInfo.FullName = '{fileInfo.FullName}'");
             var info = StbImage.GetImageInfo(fileInfo.FullName);
-            var format = isNormalMap ? TextureFormat.BC5 :
-                info.componentCount > 3 ? TextureFormat.DXT5 :
-                TextureFormat.DXT1;
-            var texture = new Texture2D(info.width, info.height, format,
-                mipChain: true, linear: isNormalMap);
-            var nativeArray = texture.GetRawTextureData<byte>();
+            var format = isNormalMap ? UnityEngine.TextureFormat.BC5 :
+                info.componentCount > 3 ? UnityEngine.TextureFormat.DXT5 :
+                UnityEngine.TextureFormat.DXT1;
+            Texture2D texture = new Texture2D(info.width, info.height, format,
+                    mipChain: true, linear: isNormalMap);
+
+            if (resize)
+            {
+                //Now we need to resize the texture to be only 2K by 2K instead of 8K by 8K
+                //We only want to resize the 40ft container skins
+                /*Main.mod.Logger.Log($"Resizing texture {fileInfo.Name} " +
+                    $"with format {format} " +
+                    $"with size {info.width}x{info.height} " +
+                    $"to {info.width / 4}x{info.height / 4}");*/
+
+                //TODO: figure out a way to copy in the bytes we need. Might have to do this manually
+                //(i.e., get both buffers and copy over the correct bytes)
+
+                //maybe:
+                //1. read as RGBA
+                //2. resize
+                //3. compress resized texture
+                //4. cache resized texture
+                //5. use resized texture
+
+                //or use this:
+                //https://stackoverflow.com/questions/51315918/how-to-encodetopng-compressed-textures-in-unity
+                var nativeArray = texture.GetRawTextureData<byte>();
+                PopulateTexture(fileInfo, format, nativeArray);
+
+                Texture2D littleTexture = ResizeTexture(texture, format);
+
+                info.width = littleTexture.width;
+                info.height = littleTexture.height;
+                texture = littleTexture;
+            }
+            else
+            {
+                var nativeArray = texture.GetRawTextureData<byte>();
+                PopulateTexture(fileInfo, format, nativeArray);
+            }
+
+            //TODO: all loaded in textures seem to be blank, and loading in takes forever
+
             return Task.Run(() =>
             {
-                PopulateTexture(fileInfo, format, nativeArray);
+                
+
                 var cachePath = GetCachePath(fileInfo.FullName);
                 Directory.CreateDirectory(Path.GetDirectoryName(cachePath));
                 DDSUtils.WriteDDSGz(new FileInfo(cachePath), texture);
                 return texture;
             });
+        }
+
+        //From https://stackoverflow.com/questions/44733841/how-to-make-texture2d-readable-via-script/44734346#44734346
+        internal static Texture2D DuplicateTexture(Texture2D source,
+            RenderTextureFormat format,
+            RenderTextureReadWrite colorSpace,
+            int width, int height)
+        {
+
+            RenderTexture renderTex = RenderTexture.GetTemporary(
+                        source.width,
+                        source.height,
+                        0,
+                        format,
+                        colorSpace);
+
+            Graphics.Blit(source, renderTex);
+            RenderTexture previous = RenderTexture.active;
+            RenderTexture.active = renderTex;
+            Texture2D editableTexture = new Texture2D(width, height);
+            //IDK if this is getting the top left or bottom left of the texture.
+            //Luckily, they're the same for the 40 ft container shader texture (ContainersAtlas_01s)
+            editableTexture.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+            editableTexture.Apply();
+            RenderTexture.active = previous;
+            RenderTexture.ReleaseTemporary(renderTex);
+            return editableTexture;
+        }
+
+        internal static Texture2D ResizeTexture(Texture2D texture, UnityEngine.TextureFormat format)
+        {
+            if (texture == null)
+            {
+                return null;
+            }
+
+            var nativeArray = texture.GetRawTextureData<byte>();
+            
+            UnityEngine.TextureFormat littleFormat = 0;
+            switch (format)
+            {
+                case UnityEngine.TextureFormat.DXT1:
+                    littleFormat = UnityEngine.TextureFormat.RGB24;
+                    break;
+                case UnityEngine.TextureFormat.DXT5:
+                    littleFormat = UnityEngine.TextureFormat.RGBA32;
+                    break;
+                case UnityEngine.TextureFormat.BC5:
+                    littleFormat = UnityEngine.TextureFormat.RGB24;
+                    break;
+                default:
+                    throw new ArgumentException("textureFormat", $"Unsupported TextureFormat {format} when resizing");
+            }
+
+            int oldWidth = texture.width,
+                oldHeight = texture.height;
+            int width = oldWidth / 4,
+                height = oldHeight / 4;
+            Texture2D littleTexture = new(oldWidth / 4, oldHeight / 4, littleFormat,
+                mipChain: true, linear: false);
+            littleTexture.LoadRawTextureData(nativeArray);
+            Color[] mipmapData;
+            for (int currentMipmapLevel = 0; currentMipmapLevel < texture.mipmapCount; currentMipmapLevel++)
+            {
+                if (width == 0 || height == 0)
+                {
+                    break;
+                }
+                mipmapData = texture.GetPixels(0, height * 3 - 1, width, height, currentMipmapLevel);
+                //Main.mod.Logger.Log($"width: {width}, height: {height}, mipmap level: {currentMipmapLevel}, # of pixels: {mipmapData.Length}.");
+                littleTexture.SetPixels(mipmapData, currentMipmapLevel);
+                width /= 2;
+                height /= 2;
+            }
+
+            littleTexture.Compress(false);
+
+            return littleTexture;
+
         }
 
         private static string GetCachePath(string path)
@@ -63,24 +185,24 @@ namespace DVCargoSwapMod
             return Path.Combine(cacheDirName, cacheFileName);
         }
 
-        private static void PopulateTexture(FileInfo path, TextureFormat textureFormat, NativeArray<byte> dest)
+        private static void PopulateTexture(FileInfo path, UnityEngine.TextureFormat textureFormat, NativeArray<byte> dest)
         {
             StbImage.TextureFormat format;
             switch (textureFormat)
             {
-                case TextureFormat.DXT1:
+                case UnityEngine.TextureFormat.DXT1:
                     format = StbImage.TextureFormat.BC1;
                     break;
-                case TextureFormat.DXT5:
+                case UnityEngine.TextureFormat.DXT5:
                     format = StbImage.TextureFormat.BC3;
                     break;
-                case TextureFormat.BC5:
+                case UnityEngine.TextureFormat.BC5:
                     format = StbImage.TextureFormat.BC5;
                     break;
                 default:
                     throw new ArgumentException("textureFormat", $"Unsupported TextureFormat {textureFormat}");
             }
-
+            //Main.mod.Logger.Log($"path.FullName = '{path.FullName}'");
             unsafe
             {
                 StbImage.ReadAndCompressImageWithMipmaps(
@@ -102,11 +224,11 @@ namespace DVCargoSwapMod
             int bytesPerBlock;
             switch (textureFormat)
             {
-                case TextureFormat.DXT1:
+                case UnityEngine.TextureFormat.DXT1:
                     bytesPerBlock = 8;
                     break;
-                case TextureFormat.DXT5:
-                case TextureFormat.BC5:
+                case UnityEngine.TextureFormat.DXT5:
+                case UnityEngine.TextureFormat.BC5:
                     bytesPerBlock = 16;
                     break;
                 default:
@@ -117,9 +239,9 @@ namespace DVCargoSwapMod
 
         private const int DDS_HEADER_SIZE = 128;
         private const int DDS_HEADER_DXT10_SIZE = 20;
-        private static byte[] DDSHeader(int width, int height, TextureFormat textureFormat, int numMipmaps)
+        private static byte[] DDSHeader(int width, int height, UnityEngine.TextureFormat textureFormat, int numMipmaps)
         {
-            var needsDXGIHeader = textureFormat != TextureFormat.DXT1 && textureFormat != TextureFormat.DXT5;
+            var needsDXGIHeader = textureFormat != UnityEngine.TextureFormat.DXT1 && textureFormat != UnityEngine.TextureFormat.DXT5;
             var headerSize = needsDXGIHeader ? DDS_HEADER_SIZE + DDS_HEADER_DXT10_SIZE : DDS_HEADER_SIZE;
             var header = new byte[headerSize];
             using (var stream = new MemoryStream(header))
@@ -146,7 +268,7 @@ namespace DVCargoSwapMod
             return header;
         }
 
-        private static byte[] DDSHeaderDXT10(TextureFormat textureFormat)
+        private static byte[] DDSHeaderDXT10(UnityEngine.TextureFormat textureFormat)
         {
             var headerDXT10 = new byte[DDS_HEADER_DXT10_SIZE];
             using (var stream = new MemoryStream(headerDXT10))
@@ -160,25 +282,25 @@ namespace DVCargoSwapMod
             return headerDXT10;
         }
 
-        private static int DXGIFormat(TextureFormat textureFormat)
+        private static int DXGIFormat(UnityEngine.TextureFormat textureFormat)
         {
             switch (textureFormat)
             {
-                case TextureFormat.BC5: return 83;
+                case UnityEngine.TextureFormat.BC5: return 83;
                 default:
                     throw new ArgumentException("textureFormat", $"Unsupported TextureFormat {textureFormat}");
             }
         }
 
-        private static byte[] PixelFormat(TextureFormat textureFormat)
+        private static byte[] PixelFormat(UnityEngine.TextureFormat textureFormat)
         {
             string fourCC;
             switch (textureFormat)
             {
-                case TextureFormat.DXT1:
+                case UnityEngine.TextureFormat.DXT1:
                     fourCC = "DXT1";
                     break;
-                case TextureFormat.DXT5:
+                case UnityEngine.TextureFormat.DXT5:
                     fourCC = "DXT5";
                     break;
                 default:
@@ -202,7 +324,7 @@ namespace DVCargoSwapMod
             var header = DDSHeader(texture.width, texture.height, texture.format, texture.mipmapCount);
             outfile.Write(header, 0, header.Length);
             var data = texture.GetRawTextureData<byte>().ToArray();
-            Debug.Log($"Writing to {fileInfo.FullName}");
+            //Debug.Log($"Writing to {fileInfo.FullName}");
             outfile.Write(data, 0, data.Length);
             outfile.Close();
         }
@@ -222,11 +344,11 @@ namespace DVCargoSwapMod
             if ((pixelFormatFlags & 0x4) == 0)
                 throw new Exception("DDS header does not have a FourCC");
             string fourCC = Encoding.ASCII.GetString(buf, 84, 4);
-            TextureFormat pixelFormat;
+            UnityEngine.TextureFormat pixelFormat;
             switch (fourCC)
             {
-                case "DXT1": pixelFormat = TextureFormat.DXT1; break;
-                case "DXT5": pixelFormat = TextureFormat.DXT5; break;
+                case "DXT1": pixelFormat = UnityEngine.TextureFormat.DXT1; break;
+                case "DXT5": pixelFormat = UnityEngine.TextureFormat.DXT5; break;
                 case "DX10":
                     // read DDS_HEADER_DXT10 header extension
                     bytesRead = infile.Read(buf, 0, DDS_HEADER_DXT10_SIZE);
@@ -236,7 +358,7 @@ namespace DVCargoSwapMod
                     switch (dxgiFormat)
                     {
                         case 83:
-                            pixelFormat = TextureFormat.BC5;
+                            pixelFormat = UnityEngine.TextureFormat.BC5;
                             break;
                         default:
                             throw new Exception($"Unsupported DXGI_FORMAT {dxgiFormat}");

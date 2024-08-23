@@ -14,9 +14,12 @@ using DV.ThingTypes;
 using DV.ThingTypes.TransitionHelpers;
 using System.Xml.Linq;
 using DV;
+using System.Linq;
+using Obi;
 
 namespace DVCargoSwapMod
 {
+
     static class Main
     {
         public static UnityModManager.ModEntry mod;
@@ -44,14 +47,21 @@ namespace DVCargoSwapMod
         {
             "AAG", "Brohm", "Chemlek", "Goorsk", "Iskar", "Krugmann", "NeoGamma", "Novae", "NovaeOld", "Obco", "Red", "Sperex", "SunOmni", "Traeg", "White"
         };
+        public static readonly string[] CONTAINER_AC_BRANDS =
+        {
+            "Chemlek", "SunOmni", "White"
+        };
         public const string DEFAULT_BRAND = "Default";
         public const string SKINS_FOLDER = "Skins";
         public const string SKINS_AC_FOLDER = SKINS_FOLDER + CONTAINER_AC;
-        public static readonly string[] TEXTURE_TYPES = new string[] { "_MainTex", "_BumpMap", "_MetallicGlossMap", "_EmissionMap" };
+        public static readonly string[] TEXTURE_TYPES = new string[] { "_MainTex", "_BumpMap", "_MetallicGlossMap", "_OcclusionMap", "_EmissionMap" };
+
+        public const string CONTAINER_40ft_SHADER = "_MetallicGlossMap";
 
         // Names of container model prefabs.
         public static HashSet<string> containerPrefabs = new HashSet<string>();
-        public static StringDictionary containerACPrefabs = new StringDictionary();
+        public static HashSet<string> containerACPrefabs = new HashSet<string>();
+        public static StringDictionary containerACPrefabsDict = new StringDictionary();
         // <container brand string, <new brand, is AC>>
         public static Dictionary<string, Dictionary<string, bool>> skinEntries = new Dictionary<string, Dictionary<string, bool>>();
         // <new brand, <texture name, texture>>
@@ -65,17 +75,73 @@ namespace DVCargoSwapMod
             harmony.PatchAll(Assembly.GetExecutingAssembly());
             // mod.Logger.Log("Patch successful.");
 
-            foreach (string s in CONTAINER_BRANDS)
+            foreach (string brand in CONTAINER_BRANDS)
             {
-                containerPrefabs.Add(CONTAINER_PREFAB + s);
-                containerACPrefabs.Add(CONTAINER_PREFAB + s + CONTAINER_AC, CONTAINER_PREFAB + s);
+                containerPrefabs.Add(CONTAINER_PREFAB + brand);
+            }
+
+            foreach (string brand in CONTAINER_AC_BRANDS)
+            {
+                containerACPrefabs.Add(CONTAINER_PREFAB + brand + CONTAINER_AC);
+                containerACPrefabsDict.Add(CONTAINER_PREFAB + brand + CONTAINER_AC, CONTAINER_PREFAB + brand);
             }
 
             LoadSkins(mod.Path + SKINS_FOLDER);
             LoadSkins(mod.Path + SKINS_AC_FOLDER, true);
 
+            foreach (UnityModManager.ModEntry mod in UnityModManager.modEntries)
+            {
+                //Main.mod.Logger.Log($"Checking if '{mod.Info.DisplayName}' is a cargo skin mod");
+                LoadSkinMod(mod);
+            }
+
             return true;
         }
+
+        //Load skins that are installed as other mods
+        static void LoadSkinMod(UnityModManager.ModEntry mod)
+        {
+            //don't want to analyze ourself
+            if (mod.Info.Id == Main.mod.Info.Id)
+            {
+                return;
+            }
+            
+            //only want to analyze mods that depend on CargoSwapMod
+            if (!mod.Requirements.ContainsKey(Main.mod.Info.Id))
+            {
+                return;
+            }
+
+            //don't want to load inactive skin mods
+            if (!mod.Enabled)
+            {
+                return;
+            }
+
+            Main.mod.Logger.Log($"Found cargo skin mod: '{mod.Info.DisplayName}'");
+            //Main.mod.Logger.Log($"Cargo skin mod path: '{mod.Path}'");
+
+            string skinsFolder = mod.Path + SKINS_FOLDER;
+            //string skinsACFolder = mod.Path + SKINS_AC_FOLDER;
+
+            if (Directory.Exists(skinsFolder))
+            {
+                Main.mod.Logger.Log("Found Skins folder for 'mod.Info.DisplayName'");
+                LoadSkins(skinsFolder, false);
+            }
+            /*if (Directory.Exists(skinsACFolder))
+            {
+                Main.mod.Logger.Log("Found SkinsAC folder");
+                LoadSkins(skinsACFolder, true);
+            }*/
+        }
+
+        /*
+         * TODO:
+         * - skinEntries probably shouldn't have C_Flatcar_ContainerAny in it
+         * - LoadLegacySkins should detect value of isContainerAC based on if skinPrefab ends in AC
+         */
 
         /// <summary>
         /// Damn I need to write a description here.
@@ -103,7 +169,11 @@ namespace DVCargoSwapMod
                     .Replace("C_FlatcarISOTankYellow2_Oxydizing", "C_Flatcar_ISOTankYellowOxydizing_x2")
                     .Replace("C_FlatcarFarmTractor", "C_Flatcar_FarmTractors");
 
-                bool allContainers = skinPrefab.Equals(CONTAINER_ANY);
+                bool isSkinAC = skinPrefab.EndsWith(CONTAINER_AC) || containerAC;
+
+                bool allContainers = skinPrefab.Equals(CONTAINER_ANY) && !containerAC;
+                bool allContainersAC = skinPrefab.Equals(CONTAINER_ANY + CONTAINER_AC)
+                    || (skinPrefab.Equals(CONTAINER_ANY) && containerAC);
 
                 string[] skinBrandPaths = Directory.GetDirectories(skinPrefabPath);
 
@@ -124,14 +194,23 @@ namespace DVCargoSwapMod
                             if (!skinEntries.ContainsKey(containerPrefab))
                                 skinEntries[containerPrefab] = new Dictionary<string, bool>();
                             // if (!skinEntries[containerPrefab].ContainsKey(brandName))
-                            skinEntries[containerPrefab][brandName] = containerAC; // false;
+                            skinEntries[containerPrefab][brandName] = isSkinAC;
                             // skinEntries[containerPrefab][brandName] = containerAC || skinEntries[containerPrefab][brandName];
+                        }
+                    }
+                    else if (allContainersAC)
+                    {
+                        foreach (string containerACPrefab in containerACPrefabs)
+                        {
+                            if (!skinEntries.ContainsKey(containerACPrefab))
+                                skinEntries[containerACPrefab] = new Dictionary<string, bool>();
+                            skinEntries[containerACPrefab][brandName] = isSkinAC;
                         }
                     }
                     else
                     {
                         // if (!skinEntries[skinPrefab].ContainsKey(brandName))
-                        skinEntries[skinPrefab][brandName] = containerAC; // false;
+                        skinEntries[skinPrefab][brandName] = isSkinAC;
                         // skinEntries[skinPrefab][brandName] = containerAC || skinEntries[skinPrefab][brandName];
                     }
 
@@ -155,8 +234,10 @@ namespace DVCargoSwapMod
                             // Check if file already read for skin texture.
                             if (!skinTextures[brandName].ContainsKey(fileName))
                             {
+                                //Only resize 40ft container textures
+                                bool is40ftContainer = skinPrefab.Contains(CONTAINER_PREFAB);
                                 // Read file
-                                var skinTexture = TextureLoader.Add(new FileInfo(skinFilePath), false);
+                                var skinTexture = TextureLoader.Add(new FileInfo(skinFilePath), false, is40ftContainer);
                                 skinTextures[brandName][fileName] = skinTexture;
                             }
                         }
@@ -170,9 +251,23 @@ namespace DVCargoSwapMod
     class CargoModelController_InstantiateCargoModel_Patch
     {
 
+        static private Texture2D ResizedShaderTexture;
+
         static bool Prefix(CargoModelController __instance)
         {
-        //original onCargoLoaded code
+            /*foreach (var cargo in Globals.G.types.cargos)
+            {
+                foreach (var loadableCarType in cargo?.loadableCarTypes)
+                {
+                    foreach (var cargoVariant in loadableCarType?.cargoPrefabVariants)
+                    {
+                        Main.mod.Logger.Log($"Cargo name: '{cargoVariant.name}'");
+                    }
+                }
+            }*/
+
+
+            //original onCargoLoaded code
             if (SingletonBehaviour<AudioManager>.Instance.cargoLoadUnload != null && __instance.trainCar.IsCargoLoadedUnloadedByMachine)
             {
                 SingletonBehaviour<AudioManager>.Instance.cargoLoadUnload.Play(__instance.trainCar.transform.position, 1f, 1f, 0f, 10f, 500f, default(AudioSourceCurves), null, __instance.trainCar.transform);
@@ -200,9 +295,9 @@ namespace DVCargoSwapMod
             string normalizedCargoPrefab = (string)cargoPrefabName.Clone();
 
             // Normalize container prefab name.
-            bool acswap = Main.containerACPrefabs.ContainsKey(cargoPrefabName);
-            if (acswap)
-                normalizedCargoPrefab = Main.containerACPrefabs[cargoPrefabName];
+            bool acswap = Main.containerACPrefabsDict.ContainsKey(cargoPrefabName);
+            //if (acswap)
+            //    normalizedCargoPrefab = Main.containerACPrefabsDict[cargoPrefabName];
 
             // Check if there are any skin entries for prefab.
             if (!Main.skinEntries.ContainsKey(normalizedCargoPrefab))
@@ -211,7 +306,18 @@ namespace DVCargoSwapMod
             Dictionary<string, bool> skinEntries = Main.skinEntries[normalizedCargoPrefab];
             List<string> skinNames = new List<string>(skinEntries.Keys);
 
-            if (skinNames.Count > 0 && !(skin = skinNames[UnityEngine.Random.Range(0, skinNames.Count)]).Equals(Main.DEFAULT_BRAND, StringComparison.OrdinalIgnoreCase))
+            //choose which skin we want to use
+            string savedSkin = null;//CargoSkinSaveManager.GetCargoSkin(__instance.trainCar);
+            if (savedSkin is null && skinNames.Count > 0)
+            {//skin was not saved for this car, so we randomly pick a new skin
+                skin = skinNames[UnityEngine.Random.Range(0, skinNames.Count)];
+            }
+            else if (skinNames.Contains(savedSkin))
+            {
+                skin = savedSkin;
+            }
+
+            if (skin is not null && !skin.Equals(Main.DEFAULT_BRAND, StringComparison.OrdinalIgnoreCase))
             {
                 // We only need to swap out the prefab for normal containers.
                 acswap = acswap || skinEntries[skin];
@@ -229,6 +335,8 @@ namespace DVCargoSwapMod
                     {
                         Main.mod.Logger.Log($"Container A1 Prefab: '{containerA1Prefab.name}'");
                     }*/
+
+                    //swap in either the sunomni container, or the sunomni ac container; whichever we need
                     original = (acswap && containerA1Prefabs.Length > 1) ? containerA1Prefabs[1] : containerA1Prefabs[0];
                 }
             }
@@ -239,10 +347,15 @@ namespace DVCargoSwapMod
 
         //original postfix
 
+            //now that we've spawned in the correct cargo prefab, we need to actually swap the texture
+            //for the new texture we chose earlier
+
             if (skin == null)
             {
                 return false;
             }
+
+            bool is40ftContainer = normalizedCargoPrefab.Contains(Main.CONTAINER_PREFAB);
 
             // Main.mod.Logger.Log(string.Format("Some cargo was loaded into a prefab named {0} on car {1}", __state, ___trainCar.logicCar.ID));
             //GameObject cargoModel = __instance.GetCurrentCargoModel();
@@ -252,6 +365,13 @@ namespace DVCargoSwapMod
                 //Main.mod.Logger.Log($"MeshRenderer name: '{m.name}'");
                 if (m.material == null)
                     continue;
+
+                if (is40ftContainer)
+                {
+                    /*m.material.EnableKeyword(Main.CONTAINER_40ft_SHADER.ToUpper());
+                    Texture shader = m.material.GetTexture(Main.CONTAINER_40ft_SHADER);*/
+                    m.material.mainTextureScale = new Vector2(4, 4);
+                }
 
                 foreach (string t in Main.TEXTURE_TYPES)
                 {
@@ -279,6 +399,24 @@ namespace DVCargoSwapMod
                         //dunno why this is here: other texture sizes render just fine. IIRC it just needs to be square
                         /*else if (skinTexture.height != 8192)
                             Main.mod.Logger.Warning($"The texture '{skin}/{name}' is not 8192x8192, but {skinTexture.width}x{skinTexture.height} and may render incorrectly.");*/
+                    }
+                    else if (texture is Texture2D texture2D && texture.name == "ContainersAtlas_01s")
+                    {//if no given shader texture, use default 40ft container shader texture
+
+                        //Default shader texture should be the same for all 40ft containers, so we
+                        //cache it to save time (only need to resize it once).
+                        if (ResizedShaderTexture is null)
+                        {
+                            Main.mod.Logger.Log("About to resize texture on 40 ft container");
+                            Texture2D readableShader = TextureLoader.DuplicateTexture(texture2D,
+                                RenderTextureFormat.BGRA32, RenderTextureReadWrite.Default,
+                                texture2D.width, texture2D.height);
+                            ResizedShaderTexture = TextureLoader.ResizeTexture(readableShader, TextureFormat.DXT5);
+                            ResizedShaderTexture.Apply(true, true);
+                            UnityEngine.Object.DontDestroyOnLoad(ResizedShaderTexture);
+                            Main.mod.Logger.Log("resized texture on 40 ft container");
+                        }
+                        m.sharedMaterial.SetTexture(t, ResizedShaderTexture);
                     }
                 }
                 // m.material.SetTexture("_MainTex", Main.testContainerSkin);
