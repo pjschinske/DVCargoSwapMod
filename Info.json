@@ -2,7 +2,7 @@
   "Id": "CargoSwapMod",
   "DisplayName": "Cargo Texture Swap Continued",
   "Author": "SatiricRug",
-  "Version": "1.0.0",
+  "Version": "1.0.1",
   "EntryMethod": "DVCargoSwapMod.Main.Load",
   "HomePage": "https://www.nexusmods.com/derailvalley/mods/1034",
   "Repository": "https://raw.githubusercontent.com/pjschinske/DVCargoSwapMod/master/Repository.json"
